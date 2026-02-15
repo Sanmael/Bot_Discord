@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import tempfile
+import base64
 
 import discord
 from discord.ext import commands
@@ -25,20 +26,85 @@ MP3_CHANNELS = "2"
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"))  # Path to cookies.txt file
 YT_COOKIES_BROWSER = os.getenv("YT_COOKIES_BROWSER")  # Browser name (chrome, firefox, etc)
+YT_COOKIES_BASE64 = os.getenv("YT_COOKIES_BASE64")  # Cookies in base64 format (for Render)
+YT_PO_TOKEN = os.getenv("YT_PO_TOKEN")  # PO Token for YouTube (experimental)
+
+def validate_cookies_file(file_path):
+    """Valida se arquivo de cookies tem header correto (Netscape format)"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+        
+        valid_headers = ['# HTTP Cookie File', '# Netscape HTTP Cookie File']
+        if not any(first_line.startswith(h) for h in valid_headers):
+            print(f"[DEBUG] ⚠️ Header inválido de cookies. Esperado: {valid_headers}, Encontrado: {first_line}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[DEBUG] Erro ao validar arquivo de cookies: {str(e)}")
+        return False
 
 def get_ydl_opts(use_cookies=False):
     """Build yt-dlp options with optional cookie support"""
     opts = {
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'lang': ['pt-BR', 'en'],
+                'player_client': ['web', 'android', 'mweb'],
+            }
+        }
     }
+    
+    # Add PO Token if available (experimental)
+    if YT_PO_TOKEN:
+        try:
+            opts['extractor_args']['youtube']['po_token'] = [YT_PO_TOKEN]
+            print(f"[DEBUG] PO Token adicionado (experimental)")
+        except:
+            pass
     
     # Add cookies only if explicitly requested
     if use_cookies:
+        # First try base64 encoded cookies (for Render)
+        if YT_COOKIES_BASE64:
+            try:
+                cookies_decoded = base64.b64decode(YT_COOKIES_BASE64).decode('utf-8')
+                temp_cookies_file = os.path.join(DOWNLOAD_DIR, '.temp_cookies.txt')
+                # Use newline='\n' to ensure Unix line endings on all platforms (Linux compatibility)
+                with open(temp_cookies_file, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(cookies_decoded)
+                
+                # Validate cookies file
+                if validate_cookies_file(temp_cookies_file):
+                    opts['cookiefile'] = temp_cookies_file
+                    print(f"[DEBUG] Usando cookies de base64")
+                    return opts
+                else:
+                    print(f"[DEBUG] ⚠️ Cookies base64 inválido - pulando")
+            except Exception as e:
+                print(f"[DEBUG] Erro ao decodificar cookies base64: {str(e)}")
+        
+        # Try file cookies
         if YT_COOKIES_FILE and os.path.exists(YT_COOKIES_FILE):
-            opts['cookiefile'] = YT_COOKIES_FILE
-        elif YT_COOKIES_BROWSER:
+            file_size = os.path.getsize(YT_COOKIES_FILE)
+            if file_size > 50:  # File has real content (not just header)
+                # Validate cookies file
+                if validate_cookies_file(YT_COOKIES_FILE):
+                    opts['cookiefile'] = YT_COOKIES_FILE
+                    print(f"[DEBUG] Usando cookies do arquivo ({file_size} bytes)")
+                    return opts
+                else:
+                    print(f"[DEBUG] ⚠️ Arquivo de cookies com header inválido")
+            else:
+                print(f"[DEBUG] Arquivo de cookies vazio ou apenas header")
+        
+        # Try browser cookies
+        if YT_COOKIES_BROWSER:
             opts['cookiesfrombrowser'] = (YT_COOKIES_BROWSER,)
+            print(f"[DEBUG] Usando cookies do navegador: {YT_COOKIES_BROWSER}")
+            return opts
     
     return opts
 
@@ -74,84 +140,64 @@ def download_mp3(url):
         
         print(f"\n[DEBUG] ========== INICIANDO DOWNLOAD ==========")
         print(f"[DEBUG] URL: {url}")
-        print(f"[DEBUG] Cookie file exists: {os.path.exists(YT_COOKIES_FILE)}")
+        print(f"[DEBUG] Plataforma: {os.name}")
         
-        # Try without cookies first (usually works for public videos)
-        try:
-            print(f"[DEBUG] ===== Tentativa 1: SEM COOKIES =====")
-            ydl_opts = get_ydl_opts(use_cookies=False)
-            ydl_opts.update({
-                'format': 'bestaudio/best',
-                'skip_unavailable_fragments': True,
-                'check_formats': False,
-                'quiet': False,
-                'no_warnings': False,
-                'socket_timeout': 30,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': mp3_file.replace('.mp3', ''),
-                'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
-            })
-            
-            print(f"[DEBUG] FFMPEG_PATH: {FFMPEG_PATH}")
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
-            if os.path.exists(mp3_file):
-                file_size = os.path.getsize(mp3_file)
-                print(f"[DEBUG] ✅ Download bem-sucedido! Tamanho: {file_size} bytes")
-                if file_size > MAX_MP3_BYTES:
-                    os.remove(mp3_file)
-                    return False, None, "MP3 excede o limite de 100MB."
-                return True, mp3_file, None
-        except Exception as e:
-            print(f"[DEBUG] ❌ Erro sem cookies: {type(e).__name__}: {str(e)}")
+        # List of strategies to try
+        strategies = [
+            {"name": "Sem cookies (padrão)", "cookies": False, "format": "bestaudio/best"},
+            {"name": "Sem cookies (fallback)", "cookies": False, "format": "480"},
+            {"name": "Com cookies", "cookies": True, "format": "bestaudio/best"},
+            {"name": "Com cookies (fallback)", "cookies": True, "format": "480"},
+            {"name": "Com PO Token (se disponível)", "cookies": True, "format": "bestaudio/best"} if YT_PO_TOKEN else None,
+            {"name": "Melhor disponível", "cookies": False, "format": "best"},
+        ]
+        strategies = [s for s in strategies if s is not None]  # Remove None entries
         
-        # Try with cookies if available
-        try:
-            print(f"[DEBUG] ===== Tentativa 2: COM COOKIES =====")
-            ydl_opts = get_ydl_opts(use_cookies=True)
-            if 'cookiefile' not in ydl_opts and 'cookiesfrombrowser' not in ydl_opts:
-                print(f"[DEBUG] Nenhum cookie disponível, pulando...")
-                raise Exception("Nenhum cookie disponível")
-            
-            print(f"[DEBUG] Cookie file path: {YT_COOKIES_FILE}")
-            
-            ydl_opts.update({
-                'format': 'bestaudio/best',
-                'skip_unavailable_fragments': True,
-                'check_formats': False,
-                'quiet': False,
-                'no_warnings': False,
-                'socket_timeout': 30,
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'outtmpl': mp3_file.replace('.mp3', ''),
-                'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
-            })
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
-            if os.path.exists(mp3_file):
-                file_size = os.path.getsize(mp3_file)
-                print(f"[DEBUG] ✅ Download bem-sucedido! Tamanho: {file_size} bytes")
-                if file_size > MAX_MP3_BYTES:
-                    os.remove(mp3_file)
-                    return False, None, "MP3 excede o limite de 100MB."
-                return True, mp3_file, None
-        except Exception as e:
-            print(f"[DEBUG] ❌ Erro com cookies: {type(e).__name__}: {str(e)}")
+        for idx, strategy in enumerate(strategies, 1):
+            try:
+                print(f"\n[DEBUG] ===== Tentativa {idx}: {strategy['name']} =====")
+                
+                ydl_opts = get_ydl_opts(use_cookies=strategy['cookies'])
+                ydl_opts.update({
+                    'format': strategy['format'],
+                    'skip_unavailable_fragments': True,
+                    'check_formats': False,
+                    'quiet': False,
+                    'no_warnings': False,
+                    'socket_timeout': 30,
+                    'retries': 3,
+                    'fragment_retries': 3,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    },
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                    'outtmpl': mp3_file.replace('.mp3', ''),
+                    'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
+                })
+                
+                print(f"[DEBUG] FFMPEG_PATH: {FFMPEG_PATH}")
+                print(f"[DEBUG] Format: {strategy['format']}")
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+                
+                if os.path.exists(mp3_file):
+                    file_size = os.path.getsize(mp3_file)
+                    print(f"[DEBUG] ✅ {strategy['name']}: Sucesso! Tamanho: {file_size} bytes")
+                    if file_size > MAX_MP3_BYTES:
+                        os.remove(mp3_file)
+                        return False, None, "MP3 excede o limite de 100MB."
+                    return True, mp3_file, None
+            except Exception as e:
+                print(f"[DEBUG] ❌ {strategy['name']}: {type(e).__name__}: {str(e)[:100]}")
+                continue
         
-        print(f"[DEBUG] ========== TODAS AS TENTATIVAS FALHARAM ==========\n")
-        return False, None, "Não foi possível fazer download do vídeo"
+        print(f"\n[DEBUG] ========== TODAS AS ESTRATÉGIAS FALHARAM ==========\n")
+        return False, None, "Não foi possível fazer download do vídeo - YouTube pode estar bloqueando a requisição"
 
     except Exception as e:
         print(f"[DEBUG] Erro geral: {type(e).__name__}: {str(e)}")
@@ -281,7 +327,8 @@ async def ajuda(ctx):
         "!continuar - Continua a reprodução pausada.\n"
         "!pular - Para a reprodução atual, mas permanece conectado ao canal de voz.\n"
         "!setcookies <cookies> - [ADMIN] Atualiza os cookies do YouTube.\n"
-        "!clearcookies - [ADMIN] Limpa/reseta os cookies do YouTube."
+        "!clearcookies - [ADMIN] Limpa/reseta os cookies do YouTube.\n"
+        "!export_cookies_base64 - [ADMIN] Exporta cookies em base64 para Render."
     )
     await ctx.send(help_message)
 
@@ -384,11 +431,15 @@ async def setcookies(ctx, *, cookies: str = None):
             cookies_content = await attachment.read()
             cookies_content = cookies_content.decode('utf-8')
             
-            # Write to cookies file
-            with open(YT_COOKIES_FILE, 'w', encoding='utf-8') as f:
+            # Write to cookies file with Unix line endings (newline='\n' for Linux compatibility)
+            with open(YT_COOKIES_FILE, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(cookies_content)
             
-            await ctx.send("✅ Cookies atualizados com sucesso via arquivo!")
+            # Validate cookies file
+            if validate_cookies_file(YT_COOKIES_FILE):
+                await ctx.send("✅ Cookies atualizados com sucesso via arquivo!")
+            else:
+                await ctx.send("⚠️ Arquivo recebido, mas header pode estar inválido. Verifique o formato.")
             
             # Delete the command message for security
             try:
@@ -401,11 +452,15 @@ async def setcookies(ctx, *, cookies: str = None):
     # Check for text content
     elif cookies:
         try:
-            # Write cookies to file
-            with open(YT_COOKIES_FILE, 'w', encoding='utf-8') as f:
+            # Write cookies to file with Unix line endings (newline='\n' for Linux compatibility)
+            with open(YT_COOKIES_FILE, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(cookies)
             
-            await ctx.send("✅ Cookies atualizados com sucesso!")
+            # Validate cookies file
+            if validate_cookies_file(YT_COOKIES_FILE):
+                await ctx.send("✅ Cookies atualizados com sucesso!")
+            else:
+                await ctx.send("⚠️ Cookies recebidos, mas header pode estar inválido. Esperado: '# Netscape HTTP Cookie File'")
             
             # Delete the command message for security
             try:
@@ -420,7 +475,40 @@ async def setcookies(ctx, *, cookies: str = None):
         await ctx.send("❌ Use um dos formatos:\n`!setcookies <cookies>` ou anexe um arquivo .txt")
 
 
-@bot.command(name="clearcookies")
+@bot.command(name="export_cookies_base64")
+@commands.is_owner()
+async def export_cookies_base64(ctx):
+    """
+    Exporta os cookies atuais em formato base64 para usar como env var no Render.
+    Uso: !export_cookies_base64
+    Apenas o dono do bot pode usar este comando.
+    """
+    try:
+        if not os.path.exists(YT_COOKIES_FILE):
+            await ctx.send("❌ Arquivo de cookies não encontrado")
+            return
+        
+        with open(YT_COOKIES_FILE, 'r', encoding='utf-8') as f:
+            cookies_content = f.read()
+        
+        cookies_base64 = base64.b64encode(cookies_content.encode('utf-8')).decode('utf-8')
+        
+        # Split into chunks for Discord (max 2000 chars per message)
+        chunk_size = 1900
+        chunks = [cookies_base64[i:i+chunk_size] for i in range(0, len(cookies_base64), chunk_size)]
+        
+        await ctx.send(f"**BASE64 Cookies (Em {len(chunks)} parte(s)) para usar como env var no Render:**\n\n`YT_COOKIES_BASE64={chunks[0]}...`\n\nCopie o valor completo de todos os pedaços:")
+        
+        for i, chunk in enumerate(chunks, 1):
+            if len(chunk) > 1990:
+                await ctx.send(f"```\nParte {i}:\n{chunk}\n```")
+            else:
+                await ctx.send(f"```\nParte {i}:\n{chunk}\n```")
+        
+        await ctx.send("⚠️ **Instrução:** Cole o valor **COMPLETO** (incluindo todas as partes) na env var `YT_COOKIES_BASE64` do Render")
+            
+    except Exception as e:
+        await ctx.send(f"❌ Erro ao exportar cookies: {str(e)}")
 @commands.is_owner()
 async def clearcookies(ctx):
     """
@@ -429,8 +517,8 @@ async def clearcookies(ctx):
     Apenas o dono do bot pode usar este comando.
     """
     try:
-        # Clear cookies file
-        with open(YT_COOKIES_FILE, 'w', encoding='utf-8') as f:
+        # Clear cookies file with Unix line endings (newline='\n' for Linux compatibility)
+        with open(YT_COOKIES_FILE, 'w', encoding='utf-8', newline='\n') as f:
             f.write("# Netscape HTTP Cookie File\n# This file is generated by yt-dlp. Do not edit.\n\n")
         
         await ctx.send("✅ Cookies foram resetados! O bot agora vai usar a configuração padrão (sem cookies).")
