@@ -22,6 +22,13 @@ MP3_SAMPLE_RATE = "44100"
 MP3_CHANNELS = "2"
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+PO_TOKEN = os.getenv("PO_TOKEN")
+
+
+def build_youtube(url):
+    if PO_TOKEN:
+        return YouTube(url, po_token=PO_TOKEN)
+    return YouTube(url)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -48,7 +55,7 @@ def download_audio():
 
 def download_mp3(url):
     try:
-        yt = YouTube(url)
+        yt = build_youtube(url)
         audio_streams = list(yt.streams.filter(only_audio=True))
         if not audio_streams:
             return False, None, "Fluxo de áudio não encontrado."
@@ -99,7 +106,7 @@ def download_mp3(url):
 
 def get_video_info(url):
     try:
-        yt = YouTube(url)
+        yt = build_youtube(url)
         stream = yt.streams.first()
         video_info = {
             "title": yt.title,
@@ -149,7 +156,7 @@ def available_resolutions():
         return jsonify({"error": "URL do YouTube inválida."}), 400
     
     try:
-        yt = YouTube(url)
+        yt = build_youtube(url)
         progressive_resolutions = list(set([
             stream.resolution 
             for stream in yt.streams.filter(progressive=True, file_extension='mp4')
