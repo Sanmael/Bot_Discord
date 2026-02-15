@@ -8,6 +8,7 @@ import subprocess
 import threading
 import tempfile
 import base64
+import shutil
 
 import discord
 from discord.ext import commands
@@ -28,6 +29,9 @@ YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", os.path.join(os.path.dirname(os.p
 YT_COOKIES_BROWSER = os.getenv("YT_COOKIES_BROWSER")  # Browser name (chrome, firefox, etc)
 YT_COOKIES_BASE64 = os.getenv("YT_COOKIES_BASE64")  # Cookies in base64 format (for Render)
 YT_PO_TOKEN = os.getenv("YT_PO_TOKEN")  # PO Token for YouTube (experimental)
+YT_JS_RUNTIME = os.getenv("YT_JS_RUNTIME", "deno")  # JS runtime for EJS (deno/node/bun/quickjs)
+YT_EJS_REMOTE = os.getenv("YT_EJS_REMOTE", "ejs:github")  # EJS scripts source
+YT_JS_RUNTIME_PATH = os.getenv("YT_JS_RUNTIME_PATH")  # Optional explicit path to JS runtime
 
 def validate_cookies_file(file_path):
     """Valida se arquivo de cookies tem header correto (Netscape format)"""
@@ -46,13 +50,19 @@ def validate_cookies_file(file_path):
 
 def get_ydl_opts(use_cookies=False):
     """Build yt-dlp options with optional cookie support"""
+    js_runtime_path = YT_JS_RUNTIME_PATH or shutil.which(YT_JS_RUNTIME)
+    if not js_runtime_path:
+        print(f"[DEBUG] ⚠️ JS runtime '{YT_JS_RUNTIME}' nao encontrado no PATH")
+
     opts = {
         'quiet': True,
         'no_warnings': True,
+        'js_runtimes': {YT_JS_RUNTIME: {'path': js_runtime_path}} if js_runtime_path else {YT_JS_RUNTIME: {}},
+        'remote_components': [YT_EJS_REMOTE],
         'extractor_args': {
             'youtube': {
                 'lang': ['pt', 'en'],
-                'player_client': ['web', 'android', 'mweb'],
+                'player_client': ['web'],
             }
         }
     }
@@ -142,14 +152,11 @@ def download_mp3(url):
         print(f"[DEBUG] URL: {url}")
         print(f"[DEBUG] Plataforma: {os.name}")
         
-        # List of strategies to try
+        # List of strategies to try (cookie-only for local testing)
         strategies = [
-            {"name": "Sem cookies (padrão)", "cookies": False, "format": "bestaudio/best"},
-            {"name": "Sem cookies (fallback)", "cookies": False, "format": "480"},
             {"name": "Com cookies", "cookies": True, "format": "bestaudio/best"},
             {"name": "Com cookies (fallback)", "cookies": True, "format": "480"},
             {"name": "Com PO Token (se disponível)", "cookies": True, "format": "bestaudio/best"} if YT_PO_TOKEN else None,
-            {"name": "Melhor disponível", "cookies": False, "format": "best"},
         ]
         strategies = [s for s in strategies if s is not None]  # Remove None entries
         
