@@ -5,16 +5,19 @@ services:
     plan: free
     buildCommand: >-
       apt-get update;
-      apt-get install -y ffmpeg curl unzip;
-      mkdir -p /opt/deno/bin;
-      curl -L https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip;
-      unzip -o /tmp/deno.zip -d /opt/deno/bin;
-      /opt/deno/bin/deno --version;
+      apt-get install -y ffmpeg curl curl gnupg2 ca-certificates lsb-release ubuntu-keyring;
+      mkdir -p /etc/apt/keyrings;
+      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg.key;
+      echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg.key] https://deb.nodesource.com/node_22.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list;
+      apt-get update;
+      apt-get install -y nodejs;
+      node --version;
+      npm --version;
       pip install -r requirements.txt
     startCommand: python start.py
     envVars:
-      - key: YT_JS_RUNTIME_PATH
-        value: /opt/deno/bin/deno
+      - key: YT_JS_RUNTIME
+        value: node
       - key: YT_EJS_REMOTE
         value: ejs:npm
       - key: DISCORD_TOKEN

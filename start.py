@@ -29,8 +29,8 @@ YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", os.path.join(os.path.dirname(os.p
 YT_COOKIES_BROWSER = os.getenv("YT_COOKIES_BROWSER")  # Browser name (chrome, firefox, etc)
 YT_COOKIES_BASE64 = os.getenv("YT_COOKIES_BASE64")  # Cookies in base64 format (for Render)
 YT_PO_TOKEN = os.getenv("YT_PO_TOKEN")  # PO Token for YouTube (experimental)
-YT_JS_RUNTIME = os.getenv("YT_JS_RUNTIME", "deno")  # JS runtime for EJS (deno/node/bun/quickjs)
-YT_EJS_REMOTE = os.getenv("YT_EJS_REMOTE", "ejs:github")  # EJS scripts source
+YT_JS_RUNTIME = os.getenv("YT_JS_RUNTIME", "node")  # JS runtime for EJS (node/deno/bun/quickjs) - Default: node (more reliable on Render)
+YT_EJS_REMOTE = os.getenv("YT_EJS_REMOTE", "ejs:npm")  # EJS scripts source
 YT_JS_RUNTIME_PATH = os.getenv("YT_JS_RUNTIME_PATH")  # Optional explicit path to JS runtime
 
 def validate_cookies_file(file_path):
