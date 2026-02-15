@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import yt_dlp
 import re
+import json
 
 import asyncio
 import os
@@ -17,12 +18,16 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+PLAYLISTS_DIR = os.path.join(BASE_DIR, "playlists")
 _local_ffmpeg = os.path.join(BASE_DIR, "ffmpeg", "bin", "ffmpeg.exe")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH") or (_local_ffmpeg if os.path.exists(_local_ffmpeg) else "ffmpeg")
 MAX_MP3_BYTES = 100 * 1024 * 1024
 MP3_BITRATE = "192k"
 MP3_SAMPLE_RATE = "44100"
 MP3_CHANNELS = "2"
+
+# Ensure playlists directory exists
+os.makedirs(PLAYLISTS_DIR, exist_ok=True)
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"))  # Path to cookies.txt file
@@ -198,6 +203,105 @@ def cleanup_file(file_path):
             print(f"[DEBUG] 🗑️ Arquivo removido: {file_path}")
         except OSError as e:
             print(f"[DEBUG] ⚠️ Erro ao remover arquivo: {e}")
+
+# ============= PLAYLIST MANAGEMENT =============
+
+def get_playlist_path(playlist_name):
+    """Get file path for a playlist"""
+    safe_name = "".join(c for c in playlist_name if c.isalnum() or c in (' ', '-', '_')).strip()
+    return os.path.join(PLAYLISTS_DIR, f"{safe_name}.json")
+
+def criar_playlist(playlist_name):
+    """Create a new empty playlist"""
+    playlist_path = get_playlist_path(playlist_name)
+    
+    if os.path.exists(playlist_path):
+        return False, "Playlist já existe"
+    
+    playlist_data = {
+        "name": playlist_name,
+        "songs": []
+    }
+    
+    try:
+        with open(playlist_path, 'w', encoding='utf-8') as f:
+            json.dump(playlist_data, f, indent=2, ensure_ascii=False)
+        return True, "Playlist criada com sucesso"
+    except Exception as e:
+        return False, f"Erro ao criar playlist: {str(e)}"
+
+def adicionar_a_playlist(playlist_name, url, title=None):
+    """Add a song to a playlist"""
+    playlist_path = get_playlist_path(playlist_name)
+    
+    if not os.path.exists(playlist_path):
+        return False, "Playlist não encontrada"
+    
+    try:
+        with open(playlist_path, 'r', encoding='utf-8') as f:
+            playlist_data = json.load(f)
+        
+        # Check if song already exists
+        if any(song['url'] == url for song in playlist_data['songs']):
+            return False, "Música já está na playlist"
+        
+        playlist_data['songs'].append({
+            "url": url,
+            "title": title or "Sem título"
+        })
+        
+        with open(playlist_path, 'w', encoding='utf-8') as f:
+            json.dump(playlist_data, f, indent=2, ensure_ascii=False)
+        
+        return True, f"Música adicionada! Total: {len(playlist_data['songs'])}"
+    except Exception as e:
+        return False, f"Erro ao adicionar música: {str(e)}"
+
+def carregar_playlist(playlist_name):
+    """Load a playlist and return its songs"""
+    playlist_path = get_playlist_path(playlist_name)
+    
+    if not os.path.exists(playlist_path):
+        return None, "Playlist não encontrada"
+    
+    try:
+        with open(playlist_path, 'r', encoding='utf-8') as f:
+            playlist_data = json.load(f)
+        return playlist_data['songs'], None
+    except Exception as e:
+        return None, f"Erro ao carregar playlist: {str(e)}"
+
+def apagar_playlist(playlist_name):
+    """Delete a playlist"""
+    playlist_path = get_playlist_path(playlist_name)
+    
+    if not os.path.exists(playlist_path):
+        return False, "Playlist não encontrada"
+    
+    try:
+        os.remove(playlist_path)
+        return True, "Playlist apagada com sucesso"
+    except Exception as e:
+        return False, f"Erro ao apagar playlist: {str(e)}"
+
+def listar_playlists():
+    """List all available playlists"""
+    try:
+        playlists = []
+        for filename in os.listdir(PLAYLISTS_DIR):
+            if filename.endswith('.json'):
+                filepath = os.path.join(PLAYLISTS_DIR, filename)
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    playlists.append({
+                        'name': data['name'],
+                        'count': len(data['songs'])
+                    })
+        return playlists, None
+    except Exception as e:
+        return None, f"Erro ao listar playlists: {str(e)}"
+
+# ============= END PLAYLIST MANAGEMENT =============
 
 @app.route('/download_mp3', methods=['POST'])
 def download_audio():
@@ -461,14 +565,23 @@ async def on_ready():
 @bot.command(name="ajuda")
 async def ajuda(ctx):
     help_message = (
-        "📜 **Comandos disponíveis:**\n"
+        "📜 **Comandos disponíveis:**\n\n"
+        "**🎵 Reprodução:**\n"
         "🎵 `!tocar <URL>` - Toca/adiciona música na fila\n"
         "⏸️ `!pausar` - Pausa a música atual\n"
         "▶️ `!continuar` - Continua a música pausada\n"
         "⏭️ `!proximo` - Pula para a próxima música da fila\n"
         "⏹️ `!parar` - Para tudo e desconecta\n"
         "📋 `!fila` - Mostra as músicas na fila\n"
-        "🗑️ `!limpar` - Limpa toda a fila\n"
+        "🗑️ `!limpar` - Limpa toda a fila\n\n"
+        "**🎼 Playlists:**\n"
+        "➕ `!criar_playlist <nome>` - Cria uma playlist\n"
+        "📝 `!adicionar_a_playlist <nome> <URL>` - Adiciona música à playlist\n"
+        "🎵 `!tocar_playlist <nome>` - Toca uma playlist\n"
+        "🗑️ `!apagar_playlist <nome>` - Apaga uma playlist\n"
+        "📋 `!playlists` - Lista todas as playlists\n"
+        "👁️ `!ver_playlist <nome>` - Mostra músicas da playlist\n\n"
+        "**🔧 Admin:**\n"
         "🔧 `!setcookies` - [ADMIN] Atualiza cookies\n"
         "🗑️ `!clearcookies` - [ADMIN] Limpa cookies\n"
         "📤 `!export_cookies_base64` - [ADMIN] Exporta cookies"
@@ -621,6 +734,140 @@ async def limpar(ctx):
     count = len(queue_data['queue'])
     queue_data['queue'].clear()
     await ctx.send(f"🗑️ Fila limpa! {count} música(s) removida(s).")
+
+
+# ============= PLAYLIST COMMANDS =============
+
+@bot.command(name="criar_playlist")
+async def criar_playlist_cmd(ctx, *, playlist_name: str):
+    """Create a new playlist"""
+    success, message = criar_playlist(playlist_name)
+    if success:
+        await ctx.send(f"✅ Playlist **{playlist_name}** criada!")
+    else:
+        await ctx.send(f"❌ {message}")
+
+@bot.command(name="adicionar_a_playlist")
+async def adicionar_a_playlist_cmd(ctx, playlist_name: str, url: str):
+    """Add a song to a playlist"""
+    if not is_valid_youtube_url(url):
+        await ctx.send("❌ URL do YouTube inválida.")
+        return
+    
+    # Get video info for title
+    await ctx.send("🔍 Obtendo informações...")
+    loop = asyncio.get_running_loop()
+    video_info, error = await loop.run_in_executor(None, get_video_info, url)
+    title = video_info.get('title', 'Sem título') if video_info else 'Sem título'
+    
+    success, message = adicionar_a_playlist(playlist_name, url, title)
+    if success:
+        await ctx.send(f"✅ **{title}** adicionada à playlist **{playlist_name}**! {message}")
+    else:
+        await ctx.send(f"❌ {message}")
+
+@bot.command(name="tocar_playlist")
+async def tocar_playlist_cmd(ctx, *, playlist_name: str):
+    """Load and play a playlist"""
+    voice_client = await ensure_voice(ctx)
+    if not voice_client:
+        return
+    
+    songs, error = carregar_playlist(playlist_name)
+    if error:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    if not songs:
+        await ctx.send(f"❌ Playlist **{playlist_name}** está vazia!")
+        return
+    
+    queue_data = get_queue(ctx.guild.id)
+    
+    # If already playing, add all songs to queue
+    if voice_client.is_playing() or voice_client.is_paused():
+        for song in songs:
+            queue_data['queue'].append((song['url'], song['title']))
+        await ctx.send(f"➕ Playlist **{playlist_name}** adicionada à fila! ({len(songs)} músicas)")
+        return
+    
+    # Not playing, add first song to play now, rest to queue
+    first_song = songs[0]
+    await ctx.send(f"🎵 Carregando playlist **{playlist_name}** ({len(songs)} músicas)...")
+    
+    # Add rest to queue
+    for song in songs[1:]:
+        queue_data['queue'].append((song['url'], song['title']))
+    
+    # Download and play first song
+    loop = asyncio.get_running_loop()
+    success, mp3_path, error = await loop.run_in_executor(None, download_mp3, first_song['url'])
+    
+    if not success:
+        await ctx.send(f"❌ Falha ao baixar primeira música: {error}")
+        return
+    
+    queue_data['current'] = mp3_path
+    audio = discord.FFmpegPCMAudio(mp3_path, executable=FFMPEG_PATH)
+    
+    def after_play(err):
+        if err:
+            print(f"Playback error: {err}")
+        asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+    
+    voice_client.play(audio, after=after_play)
+    await ctx.send(f"🎵 Tocando playlist **{playlist_name}**: **{first_song['title']}**\n📋 {len(songs)-1} música(s) na fila")
+
+@bot.command(name="apagar_playlist")
+async def apagar_playlist_cmd(ctx, *, playlist_name: str):
+    """Delete a playlist"""
+    success, message = apagar_playlist(playlist_name)
+    if success:
+        await ctx.send(f"🗑️ Playlist **{playlist_name}** apagada!")
+    else:
+        await ctx.send(f"❌ {message}")
+
+@bot.command(name="playlists")
+async def playlists_cmd(ctx):
+    """List all playlists"""
+    playlists, error = listar_playlists()
+    if error:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    if not playlists:
+        await ctx.send("📋 Nenhuma playlist encontrada.\nUse `!criar_playlist <nome>` para criar uma.")
+        return
+    
+    message = "📋 **Playlists Disponíveis:**\n\n"
+    for pl in playlists:
+        message += f"🎵 **{pl['name']}** - {pl['count']} música(s)\n"
+    
+    await ctx.send(message)
+
+@bot.command(name="ver_playlist")
+async def ver_playlist_cmd(ctx, *, playlist_name: str):
+    """Show songs in a playlist"""
+    songs, error = carregar_playlist(playlist_name)
+    if error:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    if not songs:
+        await ctx.send(f"📋 Playlist **{playlist_name}** está vazia!")
+        return
+    
+    message = f"📋 **Playlist: {playlist_name}** ({len(songs)} músicas)\n\n"
+    
+    for i, song in enumerate(songs[:15], 1):
+        message += f"{i}. {song['title']}\n"
+    
+    if len(songs) > 15:
+        message += f"\n... e mais {len(songs) - 15} música(s)"
+    
+    await ctx.send(message)
+
+# ============= END PLAYLIST COMMANDS =============
 
 
 @bot.command(name="setcookies")
