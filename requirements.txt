@@ -1,5 +1,4 @@
 flask
-pytubefix
+yt-dlp
 discord.py
 PyNaCl
-nodejs-wheel-binaries

@@ -1,11 +1,12 @@
 from flask import Flask, request, jsonify
-from pytubefix import YouTube
+import yt_dlp
 import re
 
 import asyncio
 import os
 import subprocess
 import threading
+import tempfile
 
 import discord
 from discord.ext import commands
@@ -22,11 +23,6 @@ MP3_SAMPLE_RATE = "44100"
 MP3_CHANNELS = "2"
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-YOUTUBE_CLIENT = os.getenv("YOUTUBE_CLIENT", "WEB")
-
-
-def build_youtube(url):
-    return YouTube(url, YOUTUBE_CLIENT)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -53,50 +49,35 @@ def download_audio():
 
 def download_mp3(url):
     try:
-        yt = build_youtube(url)
-        audio_streams = list(yt.streams.filter(only_audio=True))
-        if not audio_streams:
-            return False, None, "Fluxo de áudio não encontrado."
-
-        def abr_value(s):
-            if not s.abr:
-                return 0
-            digits = re.sub(r"\D", "", s.abr)
-            return int(digits) if digits else 0
-
-        stream = min(audio_streams, key=abr_value)
-
-        if not stream:
-            return False, None, "Fluxo de áudio não encontrado."
-
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-        downloaded_file = stream.download(output_path=DOWNLOAD_DIR)
-
-        base, _ = os.path.splitext(downloaded_file)
-        mp3_file = base + ".mp3"
-
-        if os.path.exists(mp3_file):
-            os.remove(mp3_file)
-
-        subprocess.run([
-            FFMPEG_PATH,
-            "-y",
-            "-i", downloaded_file,
-            "-vn",
-            "-ab", MP3_BITRATE,
-            "-ar", MP3_SAMPLE_RATE,
-            "-ac", MP3_CHANNELS,
-            mp3_file
-        ], check=True)
-
-        os.remove(downloaded_file)
-
-        if os.path.getsize(mp3_file) > MAX_MP3_BYTES:
+        
+        # Generate unique filename
+        mp3_file = os.path.join(DOWNLOAD_DIR, f"{os.urandom(8).hex()}.mp3")
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'outtmpl': mp3_file.replace('.mp3', ''),
+            'quiet': True,
+            'no_warnings': True,
+            'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        if os.path.exists(mp3_file) and os.path.getsize(mp3_file) > MAX_MP3_BYTES:
             os.remove(mp3_file)
             return False, None, "MP3 excede o limite de 100MB."
-
-        return True, mp3_file, None
+        
+        if os.path.exists(mp3_file):
+            return True, mp3_file, None
+        else:
+            return False, None, "Arquivo MP3 não foi criado."
 
     except Exception as e:
         return False, None, str(e)
@@ -104,17 +85,22 @@ def download_mp3(url):
 
 def get_video_info(url):
     try:
-        yt = build_youtube(url)
-        stream = yt.streams.first()
-        video_info = {
-            "title": yt.title,
-            "author": yt.author,
-            "length": yt.length,
-            "views": yt.views,
-            "description": yt.description,
-            "publish_date": yt.publish_date,
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
         }
-        return video_info, None
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_info = {
+                "title": info.get('title'),
+                "author": info.get('uploader'),
+                "length": info.get('duration'),
+                "views": info.get('view_count'),
+                "description": info.get('description'),
+                "publish_date": info.get('upload_date'),
+            }
+            return video_info, None
     except Exception as e:
         return None, str(e)
 
@@ -154,21 +140,24 @@ def available_resolutions():
         return jsonify({"error": "URL do YouTube inválida."}), 400
     
     try:
-        yt = build_youtube(url)
-        progressive_resolutions = list(set([
-            stream.resolution 
-            for stream in yt.streams.filter(progressive=True, file_extension='mp4')
-            if stream.resolution
-        ]))
-        all_resolutions = list(set([
-            stream.resolution 
-            for stream in yt.streams.filter(file_extension='mp4')
-            if stream.resolution
-        ]))
-        return jsonify({
-            "progressive": sorted(progressive_resolutions),
-            "all": sorted(all_resolutions)
-        }), 200
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [])
+            
+            resolutions = list(set([
+                f.get('height', 0) 
+                for f in formats 
+                if f.get('height') and f.get('vcodec') != 'none'
+            ]))
+            
+            return jsonify({
+                "resolutions": sorted([f"{r}p" for r in resolutions if r > 0])
+            }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
