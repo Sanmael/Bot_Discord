@@ -35,6 +35,65 @@ YT_JS_RUNTIME = os.getenv("YT_JS_RUNTIME", _default_runtime)  # JS runtime for E
 YT_EJS_REMOTE = os.getenv("YT_EJS_REMOTE", "ejs:npm")  # EJS scripts source
 YT_JS_RUNTIME_PATH = os.getenv("YT_JS_RUNTIME_PATH")  # Optional explicit path to JS runtime
 
+def find_js_runtime_path(runtime_name):
+    """
+    Procura por JS runtime (deno, node, etc) em locations comuns do Windows e Linux.
+    Se o path foi explicitamente setado via env var YT_JS_RUNTIME_PATH, usa aquele.
+    """
+    # If explicitly set, use it
+    if YT_JS_RUNTIME_PATH:
+        if os.path.exists(YT_JS_RUNTIME_PATH):
+            print(f"[DEBUG] ✅ JS runtime encontrado (env var): {YT_JS_RUNTIME_PATH}")
+            return YT_JS_RUNTIME_PATH
+        else:
+            print(f"[DEBUG] ⚠️ Env var YT_JS_RUNTIME_PATH setada mas arquivo não existe: {YT_JS_RUNTIME_PATH}")
+    
+    # Try PATH first
+    path_result = shutil.which(runtime_name)
+    if path_result:
+        print(f"[DEBUG] ✅ JS runtime encontrado no PATH: {path_result}")
+        return path_result
+    
+    # Windows common locations
+    if os.name == "nt":
+        common_paths = [
+            # Deno - WinGet
+            os.path.expanduser("~") + r"\AppData\Local\Microsoft\WinGet\Packages\DenoLand.Deno_Microsoft.Winget.Source_8wekyb3d8bbwe\deno.exe",
+            # Deno - Chocolatey
+            r"C:\ProgramData\chocolatey\bin\deno.exe",
+            # Node.js - Program Files
+            r"C:\Program Files\nodejs\node.exe",
+            # Node.js - Program Files (x86)
+            r"C:\Program Files (x86)\nodejs\node.exe",
+            # Deno - Manual install
+            os.path.expanduser("~") + r"\scoop\shims\deno.exe",
+        ]
+        
+        for path in common_paths:
+            if os.path.exists(path):
+                print(f"[DEBUG] ✅ JS runtime encontrado (common path): {path}")
+                return path
+    
+    # Linux/Render locations
+    else:
+        common_paths = [
+            "/opt/deno/bin/deno",
+            "/usr/local/bin/deno",
+            "/usr/bin/deno",
+            "/opt/node/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ]
+        
+        for path in common_paths:
+            if os.path.exists(path):
+                print(f"[DEBUG] ✅ JS runtime encontrado (common path): {path}")
+                return path
+    
+    print(f"[DEBUG] ⚠️ JS runtime '{runtime_name}' não foi encontrado em nenhuma location comum")
+    print(f"[DEBUG] Sugestão: SetE variável de ambiente YT_JS_RUNTIME_PATH com o path completo")
+    return None
+
 def validate_cookies_file(file_path):
     """Valida se arquivo de cookies tem header correto (Netscape format)"""
     try:
@@ -52,10 +111,8 @@ def validate_cookies_file(file_path):
 
 def get_ydl_opts(use_cookies=False):
     """Build yt-dlp options with optional cookie support"""
-    js_runtime_path = YT_JS_RUNTIME_PATH or shutil.which(YT_JS_RUNTIME)
-    if not js_runtime_path:
-        print(f"[DEBUG] ⚠️ JS runtime '{YT_JS_RUNTIME}' nao encontrado no PATH")
-
+    js_runtime_path = find_js_runtime_path(YT_JS_RUNTIME)
+    
     opts = {
         'quiet': True,
         'no_warnings': True,
