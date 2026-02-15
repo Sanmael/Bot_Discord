@@ -14,13 +14,14 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
-FFMPEG_PATH = os.path.join(BASE_DIR, "ffmpeg", "bin", "ffmpeg.exe")
+_local_ffmpeg = os.path.join(BASE_DIR, "ffmpeg", "bin", "ffmpeg.exe")
+FFMPEG_PATH = os.getenv("FFMPEG_PATH") or (_local_ffmpeg if os.path.exists(_local_ffmpeg) else "ffmpeg")
 MAX_MP3_BYTES = 100 * 1024 * 1024
-MP3_BITRATE = "64k"
-MP3_SAMPLE_RATE = "22050"
-MP3_CHANNELS = "1"
+MP3_BITRATE = "192k"
+MP3_SAMPLE_RATE = "44100"
+MP3_CHANNELS = "2"
 
-DISCORD_TOKEN = "MTE1NzQyNTg4NjUwMTU1NjI3NQ.GZRXUf.aBm2kGPD2KZdjusUvm-IR3ygz_Uvz69a9bnP_E"
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
