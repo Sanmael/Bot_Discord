@@ -22,13 +22,11 @@ MP3_SAMPLE_RATE = "44100"
 MP3_CHANNELS = "2"
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PO_TOKEN = os.getenv("PO_TOKEN")
+YOUTUBE_CLIENT = os.getenv("YOUTUBE_CLIENT", "WEB")
 
 
 def build_youtube(url):
-    if PO_TOKEN:
-        return YouTube(url, po_token=PO_TOKEN)
-    return YouTube(url)
+    return YouTube(url, YOUTUBE_CLIENT)
 
 intents = discord.Intents.default()
 intents.message_content = True
