@@ -72,13 +72,21 @@ def download_mp3(url):
         # Generate unique filename
         mp3_file = os.path.join(DOWNLOAD_DIR, f"{os.urandom(8).hex()}.mp3")
         
+        print(f"\n[DEBUG] ========== INICIANDO DOWNLOAD ==========")
+        print(f"[DEBUG] URL: {url}")
+        print(f"[DEBUG] Cookie file exists: {os.path.exists(YT_COOKIES_FILE)}")
+        
         # Try without cookies first (usually works for public videos)
         try:
+            print(f"[DEBUG] ===== Tentativa 1: SEM COOKIES =====")
             ydl_opts = get_ydl_opts(use_cookies=False)
             ydl_opts.update({
                 'format': 'bestaudio/best',
                 'skip_unavailable_fragments': True,
                 'check_formats': False,
+                'quiet': False,
+                'no_warnings': False,
+                'socket_timeout': 30,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -88,28 +96,38 @@ def download_mp3(url):
                 'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
             })
             
+            print(f"[DEBUG] FFMPEG_PATH: {FFMPEG_PATH}")
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             
             if os.path.exists(mp3_file):
-                if os.path.getsize(mp3_file) > MAX_MP3_BYTES:
+                file_size = os.path.getsize(mp3_file)
+                print(f"[DEBUG] ✅ Download bem-sucedido! Tamanho: {file_size} bytes")
+                if file_size > MAX_MP3_BYTES:
                     os.remove(mp3_file)
                     return False, None, "MP3 excede o limite de 100MB."
                 return True, mp3_file, None
         except Exception as e:
-            print(f"[DEBUG] Download sem cookies falhou: {str(e)}")
+            print(f"[DEBUG] ❌ Erro sem cookies: {type(e).__name__}: {str(e)}")
         
         # Try with cookies if available
         try:
+            print(f"[DEBUG] ===== Tentativa 2: COM COOKIES =====")
             ydl_opts = get_ydl_opts(use_cookies=True)
             if 'cookiefile' not in ydl_opts and 'cookiesfrombrowser' not in ydl_opts:
-                # No cookies available, skip this attempt
+                print(f"[DEBUG] Nenhum cookie disponível, pulando...")
                 raise Exception("Nenhum cookie disponível")
+            
+            print(f"[DEBUG] Cookie file path: {YT_COOKIES_FILE}")
             
             ydl_opts.update({
                 'format': 'bestaudio/best',
                 'skip_unavailable_fragments': True,
                 'check_formats': False,
+                'quiet': False,
+                'no_warnings': False,
+                'socket_timeout': 30,
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
@@ -119,22 +137,24 @@ def download_mp3(url):
                 'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
             })
             
-            print("[DEBUG] Tentando com cookies...")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             
             if os.path.exists(mp3_file):
-                if os.path.getsize(mp3_file) > MAX_MP3_BYTES:
+                file_size = os.path.getsize(mp3_file)
+                print(f"[DEBUG] ✅ Download bem-sucedido! Tamanho: {file_size} bytes")
+                if file_size > MAX_MP3_BYTES:
                     os.remove(mp3_file)
                     return False, None, "MP3 excede o limite de 100MB."
                 return True, mp3_file, None
         except Exception as e:
-            print(f"[DEBUG] Download com cookies falhou: {str(e)}")
+            print(f"[DEBUG] ❌ Erro com cookies: {type(e).__name__}: {str(e)}")
         
+        print(f"[DEBUG] ========== TODAS AS TENTATIVAS FALHARAM ==========\n")
         return False, None, "Não foi possível fazer download do vídeo"
 
     except Exception as e:
-        print(f"[DEBUG] Erro geral: {str(e)}")
+        print(f"[DEBUG] Erro geral: {type(e).__name__}: {str(e)}")
         return False, None, str(e)
 
 
