@@ -1,3 +1,4 @@
 flask
 pytubefix
 discord.py
+PyNaCl
