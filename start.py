@@ -180,7 +180,24 @@ def get_ydl_opts(use_cookies=False):
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-current_tracks = {}
+
+# Queue system: {guild_id: {'current': path, 'queue': [(url, title), ...]}}
+music_queues = {}
+
+def get_queue(guild_id):
+    """Get or initialize queue for a guild"""
+    if guild_id not in music_queues:
+        music_queues[guild_id] = {'current': None, 'queue': []}
+    return music_queues[guild_id]
+
+def cleanup_file(file_path):
+    """Safely delete a music file"""
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            print(f"[DEBUG] 🗑️ Arquivo removido: {file_path}")
+        except OSError as e:
+            print(f"[DEBUG] ⚠️ Erro ao remover arquivo: {e}")
 
 @app.route('/download_mp3', methods=['POST'])
 def download_audio():
@@ -370,16 +387,8 @@ async def ensure_voice(ctx):
     return ctx.voice_client
 
 
-def cleanup_track(guild_id):
-    path = current_tracks.pop(guild_id, None)
-    if path and os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
 def cleanup_downloads_dir():
+    """Clean up old files in downloads directory"""
     if not os.path.isdir(DOWNLOAD_DIR):
         return
     for name in os.listdir(DOWNLOAD_DIR):
@@ -390,6 +399,59 @@ def cleanup_downloads_dir():
             except OSError:
                 pass
 
+async def play_next(ctx):
+    """Play next song from queue"""
+    queue_data = get_queue(ctx.guild.id)
+    voice_client = ctx.voice_client
+    
+    if not voice_client or not voice_client.is_connected():
+        # Clean up current file and clear queue
+        if queue_data['current']:
+            cleanup_file(queue_data['current'])
+            queue_data['current'] = None
+        queue_data['queue'].clear()
+        return
+    
+    # Clean up previous song
+    if queue_data['current']:
+        cleanup_file(queue_data['current'])
+        queue_data['current'] = None
+    
+    # Check if there's a next song
+    if not queue_data['queue']:
+        await ctx.send("🎵 Fila vazia. Desconectando...")
+        await voice_client.disconnect()
+        return
+    
+    # Get next song from queue
+    url, title = queue_data['queue'].pop(0)
+    await ctx.send(f"⏭️ Tocando próxima: **{title}**")
+    
+    # Download next song
+    loop = asyncio.get_running_loop()
+    success, mp3_path, error = await loop.run_in_executor(None, download_mp3, url)
+    
+    if not success:
+        await ctx.send(f"❌ Erro ao baixar próxima música: {error}")
+        # Try next song in queue
+        await play_next(ctx)
+        return
+    
+    queue_data['current'] = mp3_path
+    audio = discord.FFmpegPCMAudio(mp3_path, executable=FFMPEG_PATH)
+    
+    def after_play(err):
+        if err:
+            print(f"Playback error: {err}")
+        # Play next song when this one finishes
+        asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
+    
+    voice_client.play(audio, after=after_play)
+    
+    # Show queue status
+    if queue_data['queue']:
+        await ctx.send(f"📋 **{len(queue_data['queue'])}** música(s) na fila")
+
 
 @bot.event
 async def on_ready():
@@ -399,15 +461,17 @@ async def on_ready():
 @bot.command(name="ajuda")
 async def ajuda(ctx):
     help_message = (
-        "Comandos disponíveis:\n"
-        "!tocar <URL do YouTube> - Toca o áudio do vídeo no canal de voz.\n"
-        "!parar - Para a reprodução e desconecta do canal de voz.\n"
-        "!pausar - Pausa a reprodução atual.\n"
-        "!continuar - Continua a reprodução pausada.\n"
-        "!pular - Para a reprodução atual, mas permanece conectado ao canal de voz.\n"
-        "!setcookies <cookies> - [ADMIN] Atualiza os cookies do YouTube.\n"
-        "!clearcookies - [ADMIN] Limpa/reseta os cookies do YouTube.\n"
-        "!export_cookies_base64 - [ADMIN] Exporta cookies em base64 para Render."
+        "📜 **Comandos disponíveis:**\n"
+        "🎵 `!tocar <URL>` - Toca/adiciona música na fila\n"
+        "⏸️ `!pausar` - Pausa a música atual\n"
+        "▶️ `!continuar` - Continua a música pausada\n"
+        "⏭️ `!proximo` - Pula para a próxima música da fila\n"
+        "⏹️ `!parar` - Para tudo e desconecta\n"
+        "📋 `!fila` - Mostra as músicas na fila\n"
+        "🗑️ `!limpar` - Limpa toda a fila\n"
+        "🔧 `!setcookies` - [ADMIN] Atualiza cookies\n"
+        "🗑️ `!clearcookies` - [ADMIN] Limpa cookies\n"
+        "📤 `!export_cookies_base64` - [ADMIN] Exporta cookies"
     )
     await ctx.send(help_message)
 
@@ -432,61 +496,131 @@ async def pausar(ctx):
 @bot.command(name="tocar")
 async def tocar(ctx, url: str):
     if not is_valid_youtube_url(url):
-        await ctx.send("URL do YouTube inválida.")
+        await ctx.send("❌ URL do YouTube inválida.")
         return
 
     voice_client = await ensure_voice(ctx)
     if not voice_client:
         return
-
-    await ctx.send("Baixando a droga do áudio...")
-    cleanup_downloads_dir()
+    
+    queue_data = get_queue(ctx.guild.id)
+    
+    # Get video info for title
+    await ctx.send("🔍 Obtendo informações...")
     loop = asyncio.get_running_loop()
+    video_info, error = await loop.run_in_executor(None, get_video_info, url)
+    title = video_info.get('title', 'Sem título') if video_info else 'Sem título'
+    
+    # If already playing, add to queue
+    if voice_client.is_playing() or voice_client.is_paused():
+        queue_data['queue'].append((url, title))
+        position = len(queue_data['queue'])
+        await ctx.send(f"➕ **{title}** adicionada à fila (posição #{position})")
+        return
+    
+    # Not playing, download and play immediately
+    await ctx.send(f"⬇️ Baixando: **{title}**...")
     success, mp3_path, error = await loop.run_in_executor(None, download_mp3, url)
 
     if not success:
-        await ctx.send(f"Falha ao baixar: {error}")
+        await ctx.send(f"❌ Falha ao baixar: {error}")
         return
 
-    if voice_client.is_playing():
-        voice_client.stop()
-
-    cleanup_track(ctx.guild.id)
-    current_tracks[ctx.guild.id] = mp3_path
-
+    queue_data['current'] = mp3_path
     audio = discord.FFmpegPCMAudio(mp3_path, executable=FFMPEG_PATH)
 
     def after_play(err):
-        cleanup_track(ctx.guild.id)
         if err:
             print(f"Playback error: {err}")
-        asyncio.run_coroutine_threadsafe(voice_client.disconnect(), bot.loop)
+        # Play next song when this one finishes
+        asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop)
 
     voice_client.play(audio, after=after_play)
-    await ctx.send("Tocando agora.")
+    await ctx.send(f"🎵 Tocando agora: **{title}**")
 
 
 @bot.command(name="parar")
 async def parar(ctx):
     if not ctx.voice_client:
-        await ctx.send("Não conectado a um canal de voz.")
+        await ctx.send("❌ Não conectado a um canal de voz.")
         return
 
+    queue_data = get_queue(ctx.guild.id)
+    
+    # Stop playback
     ctx.voice_client.stop()
-    cleanup_track(ctx.guild.id)
+    
+    # Clean up current file
+    if queue_data['current']:
+        cleanup_file(queue_data['current'])
+        queue_data['current'] = None
+    
+    # Clear queue
+    queue_data['queue'].clear()
+    
     await ctx.voice_client.disconnect()
-    await ctx.send("Parado e limpo.")
+    await ctx.send("⏹️ Parado e desconectado. Fila limpa.")
 
 
-@bot.command(name="pular")
-async def pular(ctx):
-    if not ctx.voice_client or not ctx.voice_client.is_playing():
-        await ctx.send("Nada está tocando.")
+@bot.command(name="proximo")
+async def proximo(ctx):
+    """Skip to next song in queue"""
+    if not ctx.voice_client:
+        await ctx.send("❌ Não conectado a um canal de voz.")
         return
+    
+    queue_data = get_queue(ctx.guild.id)
+    
+    if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused():
+        await ctx.send("❌ Nada está tocando.")
+        return
+    
+    if not queue_data['queue']:
+        await ctx.send("⏭️ Não há próxima música na fila. Parando...")
+        ctx.voice_client.stop()
+        return
+    
+    await ctx.send(f"⏭️ Pulando... ({len(queue_data['queue'])} na fila)")
+    ctx.voice_client.stop()  # This triggers after_play callback which calls play_next
 
-    ctx.voice_client.stop()
-    cleanup_track(ctx.guild.id)
-    await ctx.send("Pulou e limpo.")
+@bot.command(name="fila")
+async def fila(ctx):
+    """Show current queue"""
+    queue_data = get_queue(ctx.guild.id)
+    
+    if not queue_data['queue'] and not queue_data['current']:
+        await ctx.send("📋 A fila está vazia.")
+        return
+    
+    message = "📋 **Fila de Músicas:**\n\n"
+    
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        message += "🎵 **Tocando agora**\n"
+    
+    if queue_data['queue']:
+        message += "\n**Próximas:**\n"
+        for i, (url, title) in enumerate(queue_data['queue'][:10], 1):
+            message += f"{i}. {title}\n"
+        
+        if len(queue_data['queue']) > 10:
+            message += f"\n... e mais {len(queue_data['queue']) - 10} música(s)"
+    else:
+        message += "\n_Nenhuma música na fila_"
+    
+    await ctx.send(message)
+
+@bot.command(name="limpar")
+async def limpar(ctx):
+    """Clear the entire queue"""
+    queue_data = get_queue(ctx.guild.id)
+    
+    if not queue_data['queue']:
+        await ctx.send("📋 A fila já está vazia.")
+        return
+    
+    count = len(queue_data['queue'])
+    queue_data['queue'].clear()
+    await ctx.send(f"🗑️ Fila limpa! {count} música(s) removida(s).")
 
 
 @bot.command(name="setcookies")
