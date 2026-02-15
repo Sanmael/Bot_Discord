@@ -238,8 +238,15 @@ def download_mp3(url):
                     'buffersize': 1024 * 64,
                     'http_chunk_size': 1048576,
                     'throttledratelimit': None,
+                    'sleep_interval': 0,
+                    'max_sleep_interval': 0,
+                    'sleep_interval_requests': 0,
+                    'sleep_interval_subtitles': 0,
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-us,en;q=0.5',
+                        'Sec-Fetch-Mode': 'navigate',
                     },
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
