@@ -23,6 +23,24 @@ MP3_SAMPLE_RATE = "44100"
 MP3_CHANNELS = "2"
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+YT_COOKIES_FILE = os.getenv("YT_COOKIES_FILE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"))  # Path to cookies.txt file
+YT_COOKIES_BROWSER = os.getenv("YT_COOKIES_BROWSER")  # Browser name (chrome, firefox, etc)
+
+def get_ydl_opts(use_cookies=False):
+    """Build yt-dlp options with optional cookie support"""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    # Add cookies only if explicitly requested
+    if use_cookies:
+        if YT_COOKIES_FILE and os.path.exists(YT_COOKIES_FILE):
+            opts['cookiefile'] = YT_COOKIES_FILE
+        elif YT_COOKIES_BROWSER:
+            opts['cookiesfrombrowser'] = (YT_COOKIES_BROWSER,)
+    
+    return opts
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -54,41 +72,75 @@ def download_mp3(url):
         # Generate unique filename
         mp3_file = os.path.join(DOWNLOAD_DIR, f"{os.urandom(8).hex()}.mp3")
         
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': mp3_file.replace('.mp3', ''),
-            'quiet': True,
-            'no_warnings': True,
-            'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
-        }
+        # Try without cookies first (usually works for public videos)
+        try:
+            ydl_opts = get_ydl_opts(use_cookies=False)
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'skip_unavailable_fragments': True,
+                'check_formats': False,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': mp3_file.replace('.mp3', ''),
+                'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
+            })
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            
+            if os.path.exists(mp3_file):
+                if os.path.getsize(mp3_file) > MAX_MP3_BYTES:
+                    os.remove(mp3_file)
+                    return False, None, "MP3 excede o limite de 100MB."
+                return True, mp3_file, None
+        except Exception as e:
+            print(f"[DEBUG] Download sem cookies falhou: {str(e)}")
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        # Try with cookies if available
+        try:
+            ydl_opts = get_ydl_opts(use_cookies=True)
+            if 'cookiefile' not in ydl_opts and 'cookiesfrombrowser' not in ydl_opts:
+                # No cookies available, skip this attempt
+                raise Exception("Nenhum cookie disponível")
+            
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'skip_unavailable_fragments': True,
+                'check_formats': False,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': mp3_file.replace('.mp3', ''),
+                'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
+            })
+            
+            print("[DEBUG] Tentando com cookies...")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            
+            if os.path.exists(mp3_file):
+                if os.path.getsize(mp3_file) > MAX_MP3_BYTES:
+                    os.remove(mp3_file)
+                    return False, None, "MP3 excede o limite de 100MB."
+                return True, mp3_file, None
+        except Exception as e:
+            print(f"[DEBUG] Download com cookies falhou: {str(e)}")
         
-        if os.path.exists(mp3_file) and os.path.getsize(mp3_file) > MAX_MP3_BYTES:
-            os.remove(mp3_file)
-            return False, None, "MP3 excede o limite de 100MB."
-        
-        if os.path.exists(mp3_file):
-            return True, mp3_file, None
-        else:
-            return False, None, "Arquivo MP3 não foi criado."
+        return False, None, "Não foi possível fazer download do vídeo"
 
     except Exception as e:
+        print(f"[DEBUG] Erro geral: {str(e)}")
         return False, None, str(e)
 
 
 def get_video_info(url):
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-        }
+        ydl_opts = get_ydl_opts(use_cookies=False)
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -140,10 +192,7 @@ def available_resolutions():
         return jsonify({"error": "URL do YouTube inválida."}), 400
     
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-        }
+        ydl_opts = get_ydl_opts(use_cookies=False)
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -210,7 +259,9 @@ async def ajuda(ctx):
         "!parar - Para a reprodução e desconecta do canal de voz.\n"
         "!pausar - Pausa a reprodução atual.\n"
         "!continuar - Continua a reprodução pausada.\n"
-        "!pular - Para a reprodução atual, mas permanece conectado ao canal de voz."
+        "!pular - Para a reprodução atual, mas permanece conectado ao canal de voz.\n"
+        "!setcookies <cookies> - [ADMIN] Atualiza os cookies do YouTube.\n"
+        "!clearcookies - [ADMIN] Limpa/reseta os cookies do YouTube."
     )
     await ctx.send(help_message)
 
@@ -290,6 +341,82 @@ async def pular(ctx):
     ctx.voice_client.stop()
     cleanup_track(ctx.guild.id)
     await ctx.send("Pulou e limpo.")
+
+
+@bot.command(name="setcookies")
+@commands.is_owner()
+async def setcookies(ctx, *, cookies: str = None):
+    """
+    Atualiza o arquivo de cookies do YouTube.
+    Uso 1 (texto): !setcookies <conteúdo dos cookies>
+    Uso 2 (arquivo): !setcookies (anexar arquivo cookies.txt)
+    Apenas o dono do bot pode usar este comando.
+    """
+    # Check for file attachment
+    if ctx.message.attachments:
+        try:
+            attachment = ctx.message.attachments[0]
+            if not attachment.filename.endswith('.txt'):
+                await ctx.send("❌ Por favor, envie um arquivo .txt")
+                return
+            
+            # Download file content
+            cookies_content = await attachment.read()
+            cookies_content = cookies_content.decode('utf-8')
+            
+            # Write to cookies file
+            with open(YT_COOKIES_FILE, 'w', encoding='utf-8') as f:
+                f.write(cookies_content)
+            
+            await ctx.send("✅ Cookies atualizados com sucesso via arquivo!")
+            
+            # Delete the command message for security
+            try:
+                await ctx.message.delete()
+            except:
+                pass
+        except Exception as e:
+            await ctx.send(f"❌ Erro ao processar arquivo: {str(e)}")
+    
+    # Check for text content
+    elif cookies:
+        try:
+            # Write cookies to file
+            with open(YT_COOKIES_FILE, 'w', encoding='utf-8') as f:
+                f.write(cookies)
+            
+            await ctx.send("✅ Cookies atualizados com sucesso!")
+            
+            # Delete the command message for security
+            try:
+                await ctx.message.delete()
+            except:
+                pass
+                
+        except Exception as e:
+            await ctx.send(f"❌ Erro ao atualizar cookies: {str(e)}")
+    
+    else:
+        await ctx.send("❌ Use um dos formatos:\n`!setcookies <cookies>` ou anexe um arquivo .txt")
+
+
+@bot.command(name="clearcookies")
+@commands.is_owner()
+async def clearcookies(ctx):
+    """
+    Limpa/reseta o arquivo de cookies do YouTube.
+    Uso: !clearcookies
+    Apenas o dono do bot pode usar este comando.
+    """
+    try:
+        # Clear cookies file
+        with open(YT_COOKIES_FILE, 'w', encoding='utf-8') as f:
+            f.write("# Netscape HTTP Cookie File\n# This file is generated by yt-dlp. Do not edit.\n\n")
+        
+        await ctx.send("✅ Cookies foram resetados! O bot agora vai usar a configuração padrão (sem cookies).")
+            
+    except Exception as e:
+        await ctx.send(f"❌ Erro ao limpar cookies: {str(e)}")
     
 def run_flask():
     app.run(host="0.0.0.0", port=5000, debug=False)
