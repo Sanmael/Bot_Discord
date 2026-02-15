@@ -213,9 +213,9 @@ def download_mp3(url):
         
         # List of strategies to try (cookie-only for local testing)
         strategies = [
-            {"name": "Com cookies", "cookies": True, "format": "bestaudio/best"},
-            {"name": "Com cookies (fallback)", "cookies": True, "format": "480"},
-            {"name": "Com PO Token (se disponível)", "cookies": True, "format": "bestaudio/best"} if YT_PO_TOKEN else None,
+            {"name": "Com cookies (audio)", "cookies": True, "format": "bestaudio[ext=m4a]/bestaudio/best"},
+            {"name": "Com cookies (fallback)", "cookies": True, "format": "worstaudio/worst"},
+            {"name": "Com PO Token (se disponível)", "cookies": True, "format": "bestaudio[ext=m4a]/bestaudio/best"} if YT_PO_TOKEN else None,
         ]
         strategies = [s for s in strategies if s is not None]  # Remove None entries
         
@@ -228,11 +228,16 @@ def download_mp3(url):
                     'format': strategy['format'],
                     'skip_unavailable_fragments': True,
                     'check_formats': False,
-                    'quiet': False,
-                    'no_warnings': False,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'noprogress': True,
                     'socket_timeout': 30,
-                    'retries': 3,
-                    'fragment_retries': 3,
+                    'retries': 2,
+                    'fragment_retries': 2,
+                    'concurrent_fragment_downloads': 3,
+                    'buffersize': 1024 * 64,
+                    'http_chunk_size': 1048576,
+                    'throttledratelimit': None,
                     'http_headers': {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     },
@@ -241,6 +246,7 @@ def download_mp3(url):
                         'preferredcodec': 'mp3',
                         'preferredquality': '192',
                     }],
+                    'postprocessor_args': ['-threads', '2'],
                     'outtmpl': mp3_file.replace('.mp3', ''),
                     'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
                 })
