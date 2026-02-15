@@ -51,7 +51,7 @@ def get_ydl_opts(use_cookies=False):
         'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'lang': ['pt-BR', 'en'],
+                'lang': ['pt', 'en'],
                 'player_client': ['web', 'android', 'mweb'],
             }
         }
@@ -497,15 +497,12 @@ async def export_cookies_base64(ctx):
         chunk_size = 1900
         chunks = [cookies_base64[i:i+chunk_size] for i in range(0, len(cookies_base64), chunk_size)]
         
-        await ctx.send(f"**BASE64 Cookies (Em {len(chunks)} parte(s)) para usar como env var no Render:**\n\n`YT_COOKIES_BASE64={chunks[0]}...`\n\nCopie o valor completo de todos os pedaços:")
+        await ctx.send(f"**Base64 Cookies para Render (Em {len(chunks)} parte(s)):**\n\nCopie o valor completo de TODOS os pedaços abaixo:")
         
         for i, chunk in enumerate(chunks, 1):
-            if len(chunk) > 1990:
-                await ctx.send(f"```\nParte {i}:\n{chunk}\n```")
-            else:
-                await ctx.send(f"```\nParte {i}:\n{chunk}\n```")
+            await ctx.send(f"```\nParte {i}/{len(chunks)}:\n{chunk}\n```")
         
-        await ctx.send("⚠️ **Instrução:** Cole o valor **COMPLETO** (incluindo todas as partes) na env var `YT_COOKIES_BASE64` do Render")
+        await ctx.send(f"⚠️ **IMPORTANTE:** Cole o valor **COMPLETO** (unindo todas as {len(chunks)} parte(s)) na env var `YT_COOKIES_BASE64` do Render, sem quebras de linha!")
             
     except Exception as e:
         await ctx.send(f"❌ Erro ao exportar cookies: {str(e)}")
